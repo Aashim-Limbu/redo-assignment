@@ -14,7 +14,14 @@ use solana_sdk::{
     signer::{Signer, keypair::Keypair},
     transaction::Transaction,
 };
-use spl_token::{ID, instruction::initialize_mint, state::Mint};
+use spl_associated_token_account::{
+    get_associated_token_address, instruction::create_associated_token_account,
+};
+use spl_token::{
+    ID,
+    instruction::{self, initialize_mint},
+    state::Mint,
+};
 #[post("/keypair")]
 async fn create_keypair() -> HttpResponse {
     let pair = Keypair::new();
@@ -72,13 +79,6 @@ async fn create_token(body: web::Json<CreateToken>) -> HttpResponse {
             }));
         }
     };
-    // client
-    //     .request_airdrop(&payer.pubkey(), 1_000_000_000)
-    //     .await
-    //     .unwrap();
-
-    // let payer = get_funded_payer(rent_exempt_amount).await.unwrap();
-
     let create_account_instruction = solana_sdk::system_instruction::create_account(
         &payer.pubkey(),
         &mint,
@@ -125,16 +125,113 @@ async fn create_token(body: web::Json<CreateToken>) -> HttpResponse {
         })),
     }
 }
-// async fn get_funded_payer(min_balance: u64) -> Result<Keypair, HttpResponse> {
-//     let payer = Keypair::new();
-//     let rpc_url = "https://api.devnet.solana.com ";
-//     let client = RpcClient::new(rpc_url.to_owned());
 
-//     if client.get_balance(&payer.pubkey()).await.unwrap() < min_balance {
-//         client
-//             .request_airdrop(&payer.pubkey(), 1_000_000_000)
-//             .await
-//             .unwrap();
-//     }
-//     Ok(payer)
-// }
+#[derive(Debug, Deserialize)]
+pub struct TokenTransferRequest {
+    pub mint: String,
+    pub destination: String,
+    pub authority: String,
+    pub amount: u64,
+}
+#[post("/token/mint")]
+async fn mint_token(body: web::Json<TokenTransferRequest>) -> HttpResponse {
+    let mint_address = match Pubkey::from_str(&body.mint) {
+        Ok(p) => p,
+        Err(e) => {
+            return HttpResponse::BadRequest().json(json!({
+                "success":false,
+                "error": format!("Error: {}",e)
+            }));
+        }
+    };
+    let destination = match Pubkey::from_str(&body.destination) {
+        Ok(p) => p,
+        Err(e) => {
+            return HttpResponse::BadRequest().json(json!({
+                "success":false,
+                "error": format!("Invalid destination: {}", e)
+            }));
+        }
+    };
+    let authority = match Pubkey::from_str(&body.authority) {
+        Ok(p) => p,
+        Err(e) => {
+            return HttpResponse::BadRequest().json(json!({
+                "success":false,
+                "error": format!("Invalid authority: {}", e)
+            }));
+        }
+    };
+    let amount = body.amount;
+    let signer = match read_keypair_file(Path::new("/home/aashim/.config/solana/id.json")) {
+        Ok(p) => p,
+        Err(e) => {
+            return HttpResponse::BadRequest().json(json!({
+                 "success": false,
+                "error": format!("Failed to read keypair file: {}", e),
+            }));
+        }
+    };
+    let rpc_url = "https://api.devnet.solana.com";
+    let client = RpcClient::new(rpc_url.to_owned());
+    let associated_account = get_associated_token_address(&destination, &mint_address);
+    let associated_instruction =
+        create_associated_token_account(&signer.pubkey(), &destination, &mint_address, &ID);
+    let mint_instruction = instruction::mint_to(
+        &ID,
+        &mint_address,
+        &associated_account,
+        &authority,
+        &[&signer.pubkey()],
+        amount,
+    )
+    .unwrap();
+    let recent_blockhash = client.get_latest_blockhash().await.unwrap();
+    let transaction = Transaction::new_signed_with_payer(
+        &[associated_instruction, mint_instruction],
+        Some(&signer.pubkey()),
+        &[&signer],
+        recent_blockhash,
+    );
+    client
+        .send_and_confirm_transaction_with_spinner(&transaction)
+        .await
+        .unwrap();
+    HttpResponse::Ok().json(json!({
+        "status": true,
+        "data":{
+            "program_id": ID,
+            "accounts": [{
+                "pubkey": associated_account,
+                "is_signer":false,
+                "is_writable":true}
+            ],
+        }
+    }))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SignRequest {
+    pub message: String,
+    pub secret: String,
+}
+#[post("/message/sign")]
+async fn sign_message(body: web::Json<SignRequest>) -> HttpResponse {
+    let signer = match read_keypair_file(Path::new("/home/aashim/.config/solana/id.json")) {
+        Ok(p) => p,
+        Err(e) => {
+            return HttpResponse::BadRequest().json(json!({
+                 "success": false,
+                "error": format!("Failed to read keypair file: {}", e),
+            }));
+        }
+    };
+    let combined_message = format!("{}{}", &body.message, &body.secret);
+    let signature = signer.sign_message(&combined_message.as_bytes());
+    HttpResponse::Ok().json(json!({
+        "success":true,
+        "signature": signature,
+        "message":&body.message,
+        "public_key":signer.pubkey()
+    }))
+}
