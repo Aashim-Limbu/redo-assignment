@@ -10,7 +10,7 @@ use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::{
     program_pack::Pack,
     pubkey::Pubkey,
-    signature::read_keypair_file,
+    signature::{Signature, read_keypair_file},
     signer::{Signer, keypair::Keypair},
     transaction::Transaction,
 };
@@ -233,5 +233,40 @@ async fn sign_message(body: web::Json<SignRequest>) -> HttpResponse {
         "signature": signature,
         "message":&body.message,
         "public_key":signer.pubkey()
+    }))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct VerifyRequest {
+    pub message: String,
+    pub signature: Signature,
+    pub pubkey: String,
+    pub secret: Option<String>,
+}
+#[post("/verify")]
+async fn verify_signature(body: web::Json<VerifyRequest>) -> HttpResponse {
+    let pubkey = match Pubkey::from_str(&body.pubkey) {
+        Ok(p) => p,
+        Err(e) => {
+            return HttpResponse::BadRequest().json(json!({
+                "success": false,
+                "error": format!("Invalid public key: {}", e),
+            }));
+        }
+    };
+    let signature = &body.signature;
+    let message_to_verify = match &body.secret {
+        Some(secret) => format!("{}{}", &body.message, secret),
+        None => body.message.clone(),
+    };
+    let is_valid = signature.verify(pubkey.as_ref(), message_to_verify.as_bytes());
+    HttpResponse::Ok().json(json!({
+        "success": true,
+        "verified": is_valid,
+        "details": {
+            "message": body.message,
+            "public_key": pubkey.to_string(),
+            "used_secret": body.secret.is_some()
+        }
     }))
 }
