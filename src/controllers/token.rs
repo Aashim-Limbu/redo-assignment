@@ -2,9 +2,9 @@ use std::{path::Path, str::FromStr};
 
 use actix_web::{
     HttpResponse, post,
-    web::{self},
+    web::{self, to},
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::{
@@ -269,4 +269,115 @@ async fn verify_signature(body: web::Json<VerifyRequest>) -> HttpResponse {
             "used_secret": body.secret.is_some()
         }
     }))
+}
+#[derive(Serialize, Deserialize)]
+struct SendStruct {
+    from: String,
+    to: String,
+    lamports: u64,
+}
+#[post("/send/sol")]
+async fn send_sol(body: web::Json<SendStruct>) -> HttpResponse {
+    let from = Pubkey::from_str(&body.from).unwrap();
+    let to = Pubkey::from_str(&body.to).unwrap();
+    let instruction = solana_sdk::system_instruction::transfer(&from, &to, body.lamports);
+    let signer = match read_keypair_file(Path::new("/home/aashim/.config/solana/id.json")) {
+        Ok(p) => p,
+        Err(e) => {
+            return HttpResponse::BadRequest().json(json!({
+                "success": false,
+                "error": format!("Failed to read keypair file: {}", e),
+            }));
+        }
+    };
+    let rpc_url = "https://api.devnet.solana.com";
+    let client = RpcClient::new(rpc_url.to_owned());
+    let recent_blockhash = client.get_latest_blockhash().await.unwrap();
+    let transaction = Transaction::new_signed_with_payer(
+        &[instruction],
+        Some(&signer.pubkey()),
+        &[&signer],
+        recent_blockhash,
+    );
+    match client
+        .send_and_confirm_transaction_with_spinner(&transaction)
+        .await
+    {
+        Ok(signature) => HttpResponse::Ok().json(json!({
+            "success": true,
+            "data": {
+                "accounts": [
+                    &body.to,
+                    &body.from
+                ],
+                "signature":signature
+            }
+        })),
+        Err(e) => HttpResponse::InternalServerError().json(json!({
+            "success": false,
+            "error": format!("Transaction failed: {}", e),
+        })),
+    }
+}
+
+#[derive(Deserialize)]
+struct TokenTransfer {
+    destination: String,
+    mint: String,
+    owner: String,
+    amount: u64,
+}
+#[post("/send/token")]
+async fn token_transfer(body: web::Json<TokenTransfer>) -> HttpResponse {
+    let signer = match read_keypair_file(Path::new("/home/aashim/.config/solana/id.json")) {
+        Ok(p) => p,
+        Err(e) => {
+            return HttpResponse::BadRequest().json(json!({
+                "success": false,
+                "error": format!("Failed to read keypair file: {}", e),
+            }));
+        }
+    };
+    let destination = Pubkey::from_str(&body.destination).unwrap();
+    let mint = Pubkey::from_str(&body.mint).unwrap();
+    let owner = Pubkey::from_str(&body.owner).unwrap();
+    let rpc_url = "https://api.devnet.solana.com";
+    let client = RpcClient::new(rpc_url.to_owned());
+    let destination = get_associated_token_address(&destination, &mint);
+    let source = get_associated_token_address(&signer.pubkey(), &mint);
+    let instruction = spl_token::instruction::transfer(
+        &ID,
+        &source,
+        &destination,
+        &owner,
+        &[&signer.pubkey()],
+        body.amount,
+    )
+    .unwrap();
+    let recent_blockhash = client.get_latest_blockhash().await.unwrap();
+    let transaction = Transaction::new_signed_with_payer(
+        &[instruction],
+        Some(&signer.pubkey()),
+        &[&signer],
+        recent_blockhash,
+    );
+    match client
+        .send_and_confirm_transaction_with_spinner(&transaction)
+        .await
+    {
+        Ok(signature) => HttpResponse::Ok().json(json!({
+            "success": true,
+            "data": {
+                "accounts": [
+                    &body.destination,
+                    &signer.pubkey()
+                ],
+                "signature":signature
+            }
+        })),
+        Err(e) => HttpResponse::InternalServerError().json(json!({
+            "success": false,
+            "error": format!("Transaction failed: {}", e),
+        })),
+    }
 }

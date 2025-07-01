@@ -1,6 +1,6 @@
 use actix_web::{App, HttpServer};
 
-use crate::controllers::token::{create_keypair, create_token, mint_token, sign_message, verify_signature};
+use crate::controllers::token::{create_keypair, create_token, mint_token, send_sol, sign_message, token_transfer, verify_signature};
 mod controllers;
 
 #[actix_web::main]
@@ -12,6 +12,8 @@ async fn main() -> std::io::Result<()> {
             .service(mint_token)
             .service(sign_message)
             .service(verify_signature)
+            .service(send_sol)
+            .service(token_transfer)
     })
     .bind(("127.0.0.1", 8080))?
     .run()
